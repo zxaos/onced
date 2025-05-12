@@ -12,8 +12,8 @@ fn main() {
                 println!("done, exiting.");
                 break;
             }
-            Ok(_) => match parse_line(in_line.trim()) {
-                LineType::Text(word) => {
+            Ok(_) => match InputLine::from(in_line.trim()) {
+                InputLine::Text(word) => {
                     let converted_word = word_to_numbers(&word);
                     print!("{} -> {:?} -> ", word, converted_word);
                     if let Some(c) = core(converted_word) {
@@ -26,56 +26,49 @@ fn main() {
                     }
                     println!();
                 }
-                LineType::OneNum(n) => {
+                InputLine::OneNum(n) => {
                     print_core(core(split_numstring(n)));
                 }
-                LineType::FourNums(n) => {
+                InputLine::FourNums(n) => {
                     print_core(core(n));
                 }
-                LineType::Unknown => println!("Unrecognized input style"),
+                InputLine::Unknown => println!("Unrecognized input style"),
             },
         }
     }
 }
 
-enum LineType {
+enum InputLine {
     OneNum(usize),
     FourNums([usize; 4]),
     Text(String),
     Unknown,
 }
-fn parse_line(line: &str) -> LineType {
-    if let Ok(maybe_number) = line.parse::<usize>() {
-        return LineType::OneNum(maybe_number);
-    }
 
-    if line.chars().count() == 4 && line.chars().all(char::is_alphabetic) {
-        return LineType::Text(line.to_uppercase());
-    }
-
-    let numsplit_str: Vec<&str> = line.split(',').collect();
-    if numsplit_str.len() == 4 {
-        let numsplit_num: Vec<usize> = numsplit_str
-            .iter()
-            .flat_map(|maybe_num| maybe_num.parse::<usize>())
-            .collect();
-        if numsplit_num.len() == 4 {
-            return LineType::FourNums(
-                numsplit_num
-                    .try_into()
-                    .expect("This conversion will not be attempted unless there are four elements"),
-            );
+impl From<&str> for InputLine {
+    fn from(line: &str) -> Self {
+        if let Ok(number) = line.parse::<usize>() {
+            return InputLine::OneNum(number);
         }
-    }
 
-    LineType::Unknown
-}
+        if line.chars().count() == 4 && line.chars().all(char::is_alphabetic) {
+            return InputLine::Text(line.to_uppercase());
+        }
 
-fn print_core(input: OptU) {
-    if let Some(corenum) = input {
-        println!("{corenum}");
-    } else {
-        println!("No valid cores possible");
+        let numsplit_str: Vec<&str> = line.split(',').collect();
+        if numsplit_str.len() == 4 {
+            let numsplit_num: Vec<usize> = numsplit_str
+                .iter()
+                .flat_map(|maybe_num| maybe_num.parse::<usize>())
+                .collect();
+            if numsplit_num.len() == 4 {
+                return InputLine::FourNums(numsplit_num.try_into().expect(
+                    "This conversion will not be attempted unless there are four elements",
+                ));
+            }
+        }
+
+        InputLine::Unknown
     }
 }
 
@@ -152,45 +145,63 @@ fn number_to_letters(num: usize) -> Option<char> {
     }
 }
 
+// Could probably newtype this to implement the math functions as ops instead
 type OptU = Option<usize>;
-type OptUOp = fn(OptU, OptU) -> OptU;
+
+fn print_core(input: OptU) {
+    if let Some(corenum) = input {
+        println!("{corenum}");
+    } else {
+        println!("No valid cores possible");
+    }
+}
+
+type OptUOp = fn(usize, OptU) -> OptU;
+
 fn core(input: [usize; 4]) -> OptU {
-    const PATTERNS: [[OptUOp; 3]; 6] = [
-        [s_sub, s_mul, s_div],
-        [s_sub, s_div, s_mul],
-        [s_mul, s_sub, s_div],
-        [s_mul, s_div, s_sub],
-        [s_div, s_sub, s_mul],
-        [s_div, s_mul, s_sub],
+    // Unroll all the possible patterns
+    const PATTERNS: [[(OptUOp, usize); 3]; 6] = [
+        /* unfortunately, we must accept fractional parts during the calculation
+        so long as the end result is whole. So any time there's adjacent div and
+        mult operations, run mult first.
+        i.e. swap the operands, not the operators.
+        */
+        [(s_sub, 1), (s_mul, 2), (s_div, 3)],
+        [(s_sub, 1), (s_mul, 3), (s_div, 2)], // Swapped
+        [(s_mul, 1), (s_sub, 2), (s_div, 3)],
+        [(s_mul, 1), (s_div, 2), (s_sub, 3)],
+        [(s_div, 1), (s_sub, 2), (s_mul, 3)],
+        [(s_mul, 2), (s_div, 1), (s_sub, 3)], // Swapped
     ];
 
-    let pot_result: Vec<usize> = PATTERNS
+    // For each pattern, apply all the operations with the operand at the
+    // supplied index, then return the smallest overall result
+    PATTERNS
         .iter()
-        .flat_map(|ops| {
-            let mut interim = ops[0](Some(input[0]), Some(input[1]));
-            interim = ops[1](interim, Some(input[2]));
-            ops[2](interim, Some(input[3]))
+        .flat_map(|pattern| {
+            pattern
+                .iter()
+                .try_fold(input[0], |acc, (operation, operand)| {
+                    operation(acc, Some(input[*operand]))
+                })
         })
-        .collect();
-
-    pot_result.iter().min().copied()
+        .min()
 }
 
-fn s_sub(a: OptU, b: OptU) -> OptU {
-    a?.checked_sub(b?) // If we would go negative, we can't possibly return a whole number later
+fn s_sub(a: usize, b: OptU) -> OptU {
+    // If we would go negative, we can't possibly return a whole number later
+    a.checked_sub(b?)
 }
 
-fn s_mul(a: OptU, b: OptU) -> OptU {
-    Some(a? * b?)
+fn s_mul(a: usize, b: OptU) -> OptU {
+    Some(a * b?)
 }
 
-fn s_div(a: OptU, b: OptU) -> OptU {
-    if let (Some(a), Some(b)) = (a, b) {
-        if b != 0 && (a % b) == 0 {
-            return Some(a / b);
-        }
+fn s_div(a: usize, b: OptU) -> OptU {
+    match b {
+        Some(b) if b > 0 && a % b == 0 => Some(a / b),
+        _ => None,
     }
-    None
 }
 
 #[cfg(test)]
@@ -216,22 +227,22 @@ mod test {
 
     #[test]
     fn test_sub() {
-        assert_eq!(s_sub(Some(3), Some(1)), Some(2));
-        assert_eq!(s_sub(Some(3), None), None);
-        assert_eq!(s_sub(None, Some(1)), None);
+        assert_eq!(s_sub(3, Some(1)), Some(2));
+        assert_eq!(s_sub(3, None), None);
     }
 
     #[test]
     fn test_div() {
-        assert_eq!(s_div(Some(4), Some(2)), Some(2));
-        assert_eq!(s_div(Some(15), Some(5)), Some(3));
-        assert_eq!(s_div(Some(15), Some(4)), None);
-        assert_eq!(s_div(Some(15), Some(0)), None);
+        assert_eq!(s_div(4, Some(2)), Some(2));
+        assert_eq!(s_div(15, Some(5)), Some(3));
+        assert_eq!(s_div(15, Some(4)), None);
+        assert_eq!(s_div(15, Some(0)), None);
     }
 
     #[test]
     fn test_core() {
         assert_eq!(core([8, 6, 45, 5]), Some(18));
-        assert_eq!(core([1000, 200, 11, 2]), Some(53))
+        assert_eq!(core([1000, 200, 11, 2]), Some(53));
+        assert_eq!(core([8, 1, 14, 4]), Some(2));
     }
 }
